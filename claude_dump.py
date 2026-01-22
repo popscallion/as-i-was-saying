@@ -51,7 +51,7 @@ def get_session_summary(filepath):
                     continue
     except:
         pass
-    return filepath.name
+    return None
 
 def find_recent_sessions(limit=20):
     """Scan ~/.claude/projects for recent .jsonl sessions"""
@@ -87,9 +87,8 @@ def find_recent_sessions(limit=20):
     for s in candidates:
         raw_summary = get_session_summary(s["path"])
         
-        # If summary matches filename (fallback) or is empty, it's likely a ghost session
-        # Use filename check or size check
-        if raw_summary == s["path"].name and s["size"] < 5120:  # < 5KB
+        # If no valid user message found, skip it
+        if not raw_summary:
              continue
              
         # Truncate and clean
