@@ -22,6 +22,37 @@ def format_timestamp(ts_str):
     except:
         return ts_str
 
+def get_session_summary(filepath):
+    """Read first user message from session file"""
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                if not line.strip(): continue
+                try:
+                    data = json.loads(line)
+                    if data.get("type") == "user":
+                        # Extract content
+                        msg = data.get("message", {})
+                        content = msg.get("content", "")
+                        
+                        text = ""
+                        if isinstance(content, str):
+                            text = content
+                        elif isinstance(content, list):
+                            for block in content:
+                                if block.get("type") == "text":
+                                    text += block.get("text", "") + " "
+                        
+                        text = text.strip()
+                        # Skip empty or system-like messages if needed, but usually first user msg is the prompt
+                        if text:
+                            return text
+                except:
+                    continue
+    except:
+        pass
+    return filepath.name
+
 def find_recent_sessions(limit=20):
     """Scan ~/.claude/projects for recent .jsonl sessions"""
     base_dir = Path.home() / ".claude" / "projects"
@@ -30,15 +61,12 @@ def find_recent_sessions(limit=20):
 
     sessions = []
     # Recursively find all jsonl files
-    # Note: This might be slow if there are thousands, but usually manageable
     for path in base_dir.rglob("*.jsonl"):
         if "agent-" in path.name:
             continue
             
         try:
             stat = path.stat()
-            # Read first line to check for file-history-snapshot or similar
-            # Use size and mtime
             sessions.append({
                 "path": path,
                 "mtime": stat.st_mtime,
@@ -49,7 +77,18 @@ def find_recent_sessions(limit=20):
             
     # Sort by mtime descending
     sessions.sort(key=lambda x: x["mtime"], reverse=True)
-    return sessions[:limit]
+    recent = sessions[:limit]
+    
+    # Enrich with summaries
+    for s in recent:
+        raw_summary = get_session_summary(s["path"])
+        # Truncate and clean
+        clean_summary = raw_summary.replace('\n', ' ').strip()
+        if len(clean_summary) > 60:
+            clean_summary = clean_summary[:57] + "..."
+        s["summary"] = clean_summary
+        
+    return recent
 
 def select_session():
     """Interactive session selector"""
@@ -60,25 +99,16 @@ def select_session():
         sys.exit(1)
         
     print("\nRecent Claude Sessions:", file=sys.stderr)
-    print(f"{'#':<4} {'Date':<18} {'Size':<10} {'Filename'}", file=sys.stderr)
-    print("-" * 60, file=sys.stderr)
     
     for i, s in enumerate(sessions):
         dt = datetime.fromtimestamp(s['mtime']).strftime('%Y-%m-%d %H:%M')
-        size_kb = f"{s['size'] / 1024:.1f}KB"
-        name = s['path'].name
-        # Try to make filename more readable if it's a UUID
-        if len(name) > 40:
-             name = name[:37] + "..."
-             
-        print(f"{i+1:<4} {dt:<18} {size_kb:<10} {name}", file=sys.stderr)
+        size_kb = f"{s['size'] / 1024:.0f}KB"
         
-    print("-" * 60, file=sys.stderr)
-    
+        # Format: 1. 2026-01-21 12:00 (50KB)  Summary text...
+        print(f"{i+1:2}. {dt} ({size_kb:>5})  {s['summary']}", file=sys.stderr)
+        
     while True:
         try:
-            # input() writes the prompt to stdout/stderr depending on implementation, 
-            # safer to print prompt explicitly to stderr then read stdin
             sys.stderr.write("\nSelect session (1-20) or 'q' to quit: ")
             sys.stderr.flush()
             choice = sys.stdin.readline().strip().lower()
@@ -86,7 +116,6 @@ def select_session():
             if choice == 'q':
                 sys.exit(0)
             
-            # Handle empty input
             if not choice:
                 continue
                 
