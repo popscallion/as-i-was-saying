@@ -44,8 +44,8 @@ def get_session_summary(filepath):
                                     text += block.get("text", "") + " "
                         
                         text = text.strip()
-                        # Skip empty or system-like messages if needed, but usually first user msg is the prompt
-                        if text:
+                        # Skip empty or system-like messages (starting with <)
+                        if text and not text.startswith("<"):
                             return text
                 except:
                     continue
