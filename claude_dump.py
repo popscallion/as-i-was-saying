@@ -77,18 +77,32 @@ def find_recent_sessions(limit=20):
             
     # Sort by mtime descending
     sessions.sort(key=lambda x: x["mtime"], reverse=True)
-    recent = sessions[:limit]
     
-    # Enrich with summaries
-    for s in recent:
+    # Enrich with summaries and filter out empty sessions
+    valid_sessions = []
+    # We might need to scan more than 'limit' to fill the list after filtering
+    # So let's take a larger slice initially
+    candidates = sessions[:limit * 2]
+    
+    for s in candidates:
         raw_summary = get_session_summary(s["path"])
+        
+        # If summary matches filename (fallback) or is empty, it's likely a ghost session
+        # Use filename check or size check
+        if raw_summary == s["path"].name and s["size"] < 5120:  # < 5KB
+             continue
+             
         # Truncate and clean
         clean_summary = raw_summary.replace('\n', ' ').strip()
         if len(clean_summary) > 60:
             clean_summary = clean_summary[:57] + "..."
         s["summary"] = clean_summary
+        valid_sessions.append(s)
         
-    return recent
+        if len(valid_sessions) >= limit:
+            break
+        
+    return valid_sessions
 
 def select_session():
     """Interactive session selector"""
