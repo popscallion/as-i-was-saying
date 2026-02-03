@@ -1,7 +1,10 @@
-import json
-import sys
-import os
 import argparse
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
@@ -14,6 +17,201 @@ MODE_DESCRIPTIONS = {
 }
 
 SUPPORTED_BACKENDS = ("claude", "codex")
+
+HOME_PATH_RE = re.compile(r"/Users/[^/]+")
+UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+URL_RE = re.compile(r"(https?://)([^/\s]+)", re.IGNORECASE)
+HOSTPORT_RE = re.compile(r"\b([A-Za-z0-9.-]+\.[A-Za-z]{2,})(:\d{2,5})\b")
+DOMAIN_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b")
+IP_CANDIDATE_RE = re.compile(r"\b[0-9A-Fa-f:.]{3,}\b")
+
+TOKEN_PATTERNS = [
+    re.compile(r"\bsk-[A-Za-z0-9]{10,}\b"),
+    re.compile(r"\bsk_live_[A-Za-z0-9]{10,}\b"),
+    re.compile(r"\bgh[opurs]_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bA(?:KIA|SIA)[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
+    re.compile(r"\bya29\.[0-9A-Za-z_-]+\b"),
+]
+
+STRICT_KEY_VALUE_RE = re.compile(
+    r"\b(api[_-]?key|token|secret|password|passwd|pwd|authorization|auth)\b(\s*[:=]\s*)([^\s'\";]+)",
+    re.IGNORECASE,
+)
+STRICT_HEX_RE = re.compile(r"\b[0-9A-Fa-f]{32,}\b")
+
+LIKELY_FILE_EXTENSIONS = {
+    "md",
+    "markdown",
+    "txt",
+    "json",
+    "jsonl",
+    "csv",
+    "tsv",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "log",
+    "py",
+    "pyi",
+    "pyc",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "ps1",
+    "bat",
+    "cmd",
+    "js",
+    "ts",
+    "jsx",
+    "tsx",
+    "html",
+    "css",
+    "scss",
+    "less",
+    "xml",
+    "svg",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "pdf",
+    "zip",
+    "tar",
+    "gz",
+    "tgz",
+    "bz2",
+    "xz",
+}
+
+
+class Redactor:
+    def __init__(self, strict: bool = False) -> None:
+        self.strict = strict
+        self.mappings: Dict[str, Dict[str, str]] = {
+            "uuid": {},
+            "email": {},
+            "host": {},
+            "token": {},
+            "ip": {},
+        }
+
+    def _stable_token(self, value: str, prefix: str, mapping: Dict[str, str]) -> str:
+        existing = mapping.get(value)
+        if existing:
+            return existing
+        digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:10]
+        token = f"{prefix}-{digest}"
+        mapping[value] = token
+        return token
+
+    def redact_string(self, value: str) -> str:
+        if not value:
+            return value
+
+        value = HOME_PATH_RE.sub("/Users/USER", value)
+
+        def _uuid_repl(match: re.Match) -> str:
+            return self._stable_token(match.group(0), "UUID", self.mappings["uuid"])
+
+        value = UUID_RE.sub(_uuid_repl, value)
+
+        def _email_repl(match: re.Match) -> str:
+            return self._stable_token(match.group(0), "EMAIL", self.mappings["email"])
+
+        value = EMAIL_RE.sub(_email_repl, value)
+
+        def _url_repl(match: re.Match) -> str:
+            scheme = match.group(1)
+            hostport = match.group(2)
+
+            userinfo = None
+            if "@" in hostport:
+                userinfo, hostport = hostport.split("@", 1)
+
+            host = hostport
+            port = ""
+            if ":" in hostport:
+                possible_host, possible_port = hostport.rsplit(":", 1)
+                if possible_port.isdigit():
+                    host = possible_host
+                    port = ":" + possible_port
+
+            host_token = self._stable_token(host, "HOST", self.mappings["host"])
+            if userinfo:
+                return f"{scheme}USERINFO@{host_token}{port}"
+            return f"{scheme}{host_token}{port}"
+
+        value = URL_RE.sub(_url_repl, value)
+
+        def _hostport_repl(match: re.Match) -> str:
+            host = match.group(1)
+            port = match.group(2)
+            host_token = self._stable_token(host, "HOST", self.mappings["host"])
+            return f"{host_token}{port}"
+
+        value = HOSTPORT_RE.sub(_hostport_repl, value)
+
+        def _token_repl(match: re.Match) -> str:
+            return self._stable_token(match.group(0), "TOKEN", self.mappings["token"])
+
+        for pattern in TOKEN_PATTERNS:
+            value = pattern.sub(_token_repl, value)
+
+        if self.strict:
+            def _kv_repl(match: re.Match) -> str:
+                key = match.group(1)
+                separator = match.group(2)
+                secret = match.group(3)
+                token = self._stable_token(secret, "TOKEN", self.mappings["token"])
+                return f"{key}{separator}{token}"
+
+            value = STRICT_KEY_VALUE_RE.sub(_kv_repl, value)
+
+            def _hex_repl(match: re.Match) -> str:
+                return self._stable_token(match.group(0), "TOKEN", self.mappings["token"])
+
+            value = STRICT_HEX_RE.sub(_hex_repl, value)
+
+        def _ip_repl(match: re.Match) -> str:
+            candidate = match.group(0)
+            try:
+                ipaddress.ip_address(candidate)
+            except ValueError:
+                return candidate
+            return self._stable_token(candidate, "IP", self.mappings["ip"])
+
+        value = IP_CANDIDATE_RE.sub(_ip_repl, value)
+
+        def _domain_repl(match: re.Match) -> str:
+            domain = match.group(0)
+            if not self.strict:
+                tld = domain.rsplit(".", 1)[-1].lower()
+                if tld in LIKELY_FILE_EXTENSIONS:
+                    return domain
+            return self._stable_token(domain, "HOST", self.mappings["host"])
+
+        value = DOMAIN_RE.sub(_domain_repl, value)
+
+        return value
+
+    def redact(self, obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: self.redact(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self.redact(v) for v in obj]
+        if isinstance(obj, str):
+            return self.redact_string(obj)
+        return obj
 
 
 def format_timestamp(ts_str: str) -> str:
@@ -156,26 +354,36 @@ def select_session(backend: str) -> str:
             sys.exit(0)
 
 
-def render_block(block: Dict[str, Any], mode: str) -> str:
+def render_block(block: Dict[str, Any], mode: str, redactor: Optional[Redactor] = None) -> str:
     b_type = block.get("type")
 
     # --chat mode (DEFAULT): Skip everything except text
     if mode == "chat":
         if b_type == "text":
-            return block.get("text", "")
+            text = block.get("text", "")
+            if redactor:
+                text = redactor.redact(text)
+            return text
         return ""
 
     # Common for Thoughts and Verbose
     if b_type == "text":
-        return block.get("text", "")
+        text = block.get("text", "")
+        if redactor:
+            text = redactor.redact(text)
+        return text
 
     if b_type == "thinking":
         thinking = block.get("thinking", "")
+        if redactor:
+            thinking = redactor.redact(thinking)
         return "> **Thinking**\n" + "\n".join(f"> {line}" for line in thinking.splitlines())
 
     if b_type == "tool_use":
         name = block.get("name")
         input_data = block.get("input")
+        if redactor:
+            input_data = redactor.redact(input_data)
         return f"**Tool Use: `{name}`**\n```json\n{json.dumps(input_data, indent=2)}\n```"
 
     if b_type == "tool_result":
@@ -186,6 +394,8 @@ def render_block(block: Dict[str, Any], mode: str) -> str:
 
         if mode == "verbose":
             content = block.get("content", "")
+            if redactor:
+                content = redactor.redact(content)
             is_error = block.get("is_error", False)
             header = "**Tool Result (Error)**" if is_error else "**Tool Result**"
 
@@ -210,11 +420,15 @@ def render_block(block: Dict[str, Any], mode: str) -> str:
     if b_type == "meta":
         label = block.get("label", "Meta")
         content = block.get("content", {})
+        if redactor:
+            content = redactor.redact(content)
         return f"**{label}**\n```json\n{json.dumps(content, indent=2)}\n```"
 
     if b_type == "unknown":
         source = block.get("source", "unknown")
         raw = block.get("raw", {})
+        if redactor:
+            raw = redactor.redact(raw)
         return f"**Unknown Block: `{source}`**\n```json\n{json.dumps(raw, indent=2)}\n```"
 
     return ""
@@ -466,7 +680,13 @@ def normalize_codex_event(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def convert(filepath: str, output_file: Optional[str] = None, mode: str = "chat", backend: str = "claude") -> None:
+def convert(
+    filepath: str,
+    output_file: Optional[str] = None,
+    mode: str = "chat",
+    backend: str = "claude",
+    redaction: str = "none",
+) -> None:
     if not os.path.exists(filepath):
         print(f"Error: File not found {filepath}")
         return
@@ -475,10 +695,19 @@ def convert(filepath: str, output_file: Optional[str] = None, mode: str = "chat"
     if output_file:
         out = open(output_file, "w", encoding="utf-8")
 
+    redactor: Optional[Redactor] = None
+    if redaction in {"standard", "strict"}:
+        redactor = Redactor(strict=redaction == "strict")
+
     try:
         out.write(f"# Transcript: {os.path.basename(filepath)}\n")
         out.write(f"Mode: {mode}\n")
         out.write(f"Description: {MODE_DESCRIPTIONS.get(mode, '')}\n\n")
+        if redactor:
+            out.write("WARNING: Redaction enabled (pattern-based; not guaranteed safe to share).\n")
+            if redaction == "strict":
+                out.write("WARNING: Strict redaction may over-redact and remove useful context.\n")
+            out.write("\n")
 
         with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
@@ -496,7 +725,7 @@ def convert(filepath: str, output_file: Optional[str] = None, mode: str = "chat"
                     rendered_blocks: List[str] = []
 
                     for block in blocks:
-                        rendered = render_block(block, mode)
+                        rendered = render_block(block, mode, redactor)
                         if rendered:
                             rendered_blocks.append(rendered)
 
@@ -537,6 +766,18 @@ def main() -> None:
     group.add_argument("--thoughts", action="store_true", help="Enable 'thoughts' mode (Logic flow, summarized outputs)")
     group.add_argument("--verbose", action="store_true", help="Enable 'verbose' mode (Full record with outputs)")
 
+    redaction_group = parser.add_mutually_exclusive_group()
+    redaction_group.add_argument(
+        "--redact",
+        action="store_true",
+        help="Enable pattern-based redaction in output (not guaranteed safe)",
+    )
+    redaction_group.add_argument(
+        "--redact-strict",
+        action="store_true",
+        help="Enable aggressive redaction (may over-redact useful context)",
+    )
+
     args = parser.parse_args()
 
     mode = "chat"
@@ -544,6 +785,12 @@ def main() -> None:
         mode = "verbose"
     elif args.thoughts:
         mode = "thoughts"
+
+    redaction = "none"
+    if args.redact_strict:
+        redaction = "strict"
+    elif args.redact:
+        redaction = "standard"
 
     backend = args.backend
 
@@ -559,7 +806,7 @@ def main() -> None:
             print("Error: No input file provided and not running interactively.", file=sys.stderr)
             sys.exit(1)
 
-    convert(args.input_file, args.output_file, mode, backend)
+    convert(args.input_file, args.output_file, mode, backend, redaction)
 
 
 if __name__ == "__main__":

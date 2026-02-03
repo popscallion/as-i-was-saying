@@ -41,6 +41,13 @@ as-i-was-saying --thoughts path/to/session.jsonl
 as-i-was-saying --verbose path/to/session.jsonl
 ```
 
+## Redaction
+
+- `--redact`: pattern-based redaction of common identifiers in output.
+- `--redact-strict`: more aggressive redaction (may over-redact useful context).
+
+Redaction is opt-in and prints loud warnings in the output. It is not guaranteed to catch every secret.
+
 ## Data Locations
 
 - Claude: `~/.claude/projects`
