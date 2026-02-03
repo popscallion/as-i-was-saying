@@ -21,4 +21,4 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["as_i_was_saying.py"]
+packages = ["as_i_was_saying.py", "redaction.py"]
