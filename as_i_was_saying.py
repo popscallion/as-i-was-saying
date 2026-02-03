@@ -491,6 +491,10 @@ def convert(
     backend: str = "claude",
     redaction: str = "none",
 ) -> None:
+    """Convert a JSONL session into Markdown.
+
+    redaction: "none" | "standard" | "strict"
+    """
     if not os.path.exists(filepath):
         print(f"Error: File not found {filepath}")
         return
@@ -508,6 +512,7 @@ def convert(
         out.write(f"Mode: {mode}\n")
         out.write(f"Description: {MODE_DESCRIPTIONS.get(mode, '')}\n\n")
         if redactor:
+            out.write(f"Redaction: {redaction}\n")
             out.write("WARNING: Redaction enabled (pattern-based; not guaranteed safe to share).\n")
             if redaction == "strict":
                 out.write("WARNING: Strict redaction may over-redact and remove useful context.\n")
@@ -566,9 +571,14 @@ def main() -> None:
         help="Select backend (default: claude)",
     )
 
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--thoughts", action="store_true", help="Enable 'thoughts' mode (Logic flow, summarized outputs)")
-    group.add_argument("--verbose", action="store_true", help="Enable 'verbose' mode (Full record with outputs)")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--mode",
+        choices=["chat", "thoughts", "verbose"],
+        help="Select rendering mode (default: chat)",
+    )
+    mode_group.add_argument("--thoughts", action="store_true", help="Enable 'thoughts' mode (Logic flow, summarized outputs)")
+    mode_group.add_argument("--verbose", action="store_true", help="Enable 'verbose' mode (Full record with outputs)")
 
     redaction_group = parser.add_mutually_exclusive_group()
     redaction_group.add_argument(
@@ -581,17 +591,31 @@ def main() -> None:
         action="store_true",
         help="Enable aggressive redaction (may over-redact useful context)",
     )
+    redaction_group.add_argument(
+        "--redact-level",
+        choices=["standard", "strict", "none"],
+        help="Select redaction level (standard|strict|none)",
+    )
 
     args = parser.parse_args()
 
     mode = "chat"
-    if args.verbose:
+    if args.mode:
+        mode = args.mode
+    elif args.verbose:
         mode = "verbose"
     elif args.thoughts:
         mode = "thoughts"
 
     redaction = "none"
-    if args.redact_strict:
+    if args.redact_level:
+        if args.redact_level == "standard":
+            redaction = "standard"
+        elif args.redact_level == "strict":
+            redaction = "strict"
+        else:
+            redaction = "none"
+    elif args.redact_strict:
         redaction = "strict"
     elif args.redact:
         redaction = "standard"

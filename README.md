@@ -20,6 +20,19 @@ as-i-was-saying path/to/session.jsonl
 as-i-was-saying path/to/session.jsonl output.md
 ```
 
+## Install to PATH (optional)
+
+Use `uv` to install the CLI and add it to your shell PATH:
+```bash
+uv tool install --editable .
+uv tool update-shell
+```
+
+Restart your shell after updating PATH. You can also add the tool directory manually:
+```bash
+uv tool dir
+```
+
 ## Backends
 
 Claude is the default backend. Codex sessions require `--backend codex`.
@@ -39,12 +52,14 @@ If you pass a file path under `~/.codex/sessions` or `~/.claude/projects`, the t
 ```bash
 as-i-was-saying --thoughts path/to/session.jsonl
 as-i-was-saying --verbose path/to/session.jsonl
+as-i-was-saying --mode verbose path/to/session.jsonl
 ```
 
 ## Redaction
 
 - `--redact`: pattern-based redaction of common identifiers in output.
 - `--redact-strict`: more aggressive redaction (may over-redact useful context).
+- `--redact-level {standard|strict|none}`: explicit redaction level selection.
 
 Redaction is opt-in and prints loud warnings in the output. It is not guaranteed to catch every secret.
 
