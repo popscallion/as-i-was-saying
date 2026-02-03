@@ -56,7 +56,23 @@ as-i-was-saying --verbose path/to/session.jsonl
 ## Privacy Notes
 
 - Fixtures are anonymized, but logs can still contain sensitive data.
+- Anonymization is pattern-based and not guaranteed to catch every secret; review before sharing.
+- The anonymizer also redacts bare domains, IP addresses, and common token formats, which may over-redact legitimate text.
+- Do not publish raw logs; anonymize before sharing or opening a PR.
+- Keep fixtures minimal (single short session per backend) and trim large tool outputs.
 - If you fork this repo and are not contributing back, keep the fork private.
+- If you scrub history, delete any remote tags or branches that still reference pre-scrub commits.
+- Anonymized fixtures are not guaranteed safe for public posting.
+
+**Fixture Checklist**
+Run these scans before committing fixtures:
+```bash
+rg -n "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}" tests/fixtures
+rg -n "https?://" tests/fixtures | rg -n -v "https?://HOST-"
+rg -n "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" tests/fixtures
+rg -n "\\b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f]{1,4}\\b" tests/fixtures
+rg -n "\\b(sk-[A-Za-z0-9]{10,}|sk_live_[A-Za-z0-9]{10,}|gh[opurs]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|A(?:KIA|SIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ya29\\.[0-9A-Za-z_-]+)\\b" tests/fixtures
+```
 
 ## Development
 
@@ -72,6 +88,8 @@ Regenerate expected outputs with:
 ```bash
 uv run python tools/regenerate_fixtures.py
 ```
+
+The pre-commit hook runs `uv lock --check`, `pytest`, and privacy scans against `tests/fixtures`.
 
 ### History Scrub (if needed)
 

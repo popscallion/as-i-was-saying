@@ -8,6 +8,7 @@ and truncates very large text blobs to keep fixtures small.
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import re
 from pathlib import Path
@@ -23,6 +24,66 @@ EMAIL_RE = re.compile(
 )
 URL_RE = re.compile(r"(https?://)([^/\s]+)", re.IGNORECASE)
 HOSTPORT_RE = re.compile(r"\b([A-Za-z0-9.-]+\.[A-Za-z]{2,})(:\d{2,5})\b")
+DOMAIN_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b")
+IP_CANDIDATE_RE = re.compile(r"\b[0-9A-Fa-f:.]{3,}\b")
+
+TOKEN_PATTERNS = [
+    re.compile(r"\bsk-[A-Za-z0-9]{10,}\b"),
+    re.compile(r"\bsk_live_[A-Za-z0-9]{10,}\b"),
+    re.compile(r"\bgh[opurs]_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bA(?:KIA|SIA)[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
+    re.compile(r"\bya29\.[0-9A-Za-z_-]+\b"),
+]
+
+LIKELY_FILE_EXTENSIONS = {
+    "md",
+    "markdown",
+    "txt",
+    "json",
+    "jsonl",
+    "csv",
+    "tsv",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "log",
+    "py",
+    "pyi",
+    "pyc",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "ps1",
+    "bat",
+    "cmd",
+    "js",
+    "ts",
+    "jsx",
+    "tsx",
+    "html",
+    "css",
+    "scss",
+    "less",
+    "xml",
+    "svg",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "pdf",
+    "zip",
+    "tar",
+    "gz",
+    "tgz",
+    "bz2",
+    "xz",
+}
 
 DEFAULT_TRUNCATE = 2000
 
@@ -89,6 +150,34 @@ def _redact_string(value: str, mappings: Dict[str, Dict[str, str]], max_len: int
 
     value = HOSTPORT_RE.sub(_hostport_repl, value)
 
+    # Replace token-like secrets with stable tokens
+    def _token_repl(match: re.Match[str]) -> str:
+        return _stable_token(match.group(0), "TOKEN", mappings["token"])
+
+    for pattern in TOKEN_PATTERNS:
+        value = pattern.sub(_token_repl, value)
+
+    # Replace IP literals (IPv4/IPv6) when not part of a URL
+    def _ip_repl(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            return candidate
+        return _stable_token(candidate, "IP", mappings["ip"])
+
+    value = IP_CANDIDATE_RE.sub(_ip_repl, value)
+
+    # Replace bare domains (without scheme) with stable tokens
+    def _domain_repl(match: re.Match[str]) -> str:
+        domain = match.group(0)
+        tld = domain.rsplit(".", 1)[-1].lower()
+        if tld in LIKELY_FILE_EXTENSIONS:
+            return domain
+        return _stable_token(domain, "HOST", mappings["host"])
+
+    value = DOMAIN_RE.sub(_domain_repl, value)
+
     # Truncate extremely long strings to keep fixtures small
     if len(value) > max_len:
         return value[: max_len // 2] + f"[TRUNCATED len={len(value)}]" + value[-max_len // 2 :]
@@ -111,6 +200,8 @@ def anonymize_file(input_path: Path, output_path: Path, max_len: int) -> None:
         "uuid": {},
         "email": {},
         "host": {},
+        "token": {},
+        "ip": {},
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
